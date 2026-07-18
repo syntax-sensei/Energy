@@ -7,12 +7,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackButton } from '@/components/map/back-button';
 import { ChargerMarker } from '@/components/map/charger-marker';
 import { ClusterMarker } from '@/components/map/cluster-marker';
+import { StationBottomSheet } from '@/components/map/station-bottom-sheet';
 import { ThemedText } from '@/components/themed-text';
-import { MapStyle } from '@/constants/map-style';
 import { Spacing } from '@/constants/theme';
 import { useChargerClusters } from '@/hooks/use-charger-clusters';
 import { distanceMeters, fetchNearbyChargers, radiusFromRegion } from '@/services/nearby-chargers';
-import type { ChargingStation } from '@/types/charging-station';
+import type { ChargingStation, LatLng } from '@/types/charging-station';
 
 type EvMapProps = {
   onBack?: () => void;
@@ -25,24 +25,20 @@ const DEFAULT_DELTAS = {
 };
 
 const SEARCH_DEBOUNCE_MS = 800;
+/** Snappy camera move — no long ease. */
+const CENTER_ANIMATION_MS = 120;
+/** Zoom in ~50% on select (new span = 50% of current). Always zooms in. */
+const SELECT_ZOOM_FACTOR = 0.5;
+/** Closest auto-zoom span on select — won't zoom in past this. */
+const MIN_SELECT_DELTA = 0.01;
 
-/** Name cards only show once zoomed in this close (smaller delta = more zoomed in). */
-const CARD_VISIBLE_MAX_DELTA = 0.015;
-/** Pin stays full-size up to this delta, then shrinks down to MIN_PIN_SCALE while zooming out. */
-const PIN_FULL_SCALE_DELTA = 0.015;
-const PIN_MIN_SCALE_DELTA = 0.08;
-const MIN_PIN_SCALE = 0.6;
-
-function pinScaleForDelta(latitudeDelta: number): number {
-  if (latitudeDelta <= PIN_FULL_SCALE_DELTA) {
-    return 1;
+function selectZoomDelta(currentDelta: number): number {
+  const zoomed = currentDelta * SELECT_ZOOM_FACTOR;
+  if (zoomed < MIN_SELECT_DELTA) {
+    // Already at/ past the floor: keep current; otherwise clamp to the floor.
+    return Math.min(currentDelta, MIN_SELECT_DELTA);
   }
-  if (latitudeDelta >= PIN_MIN_SCALE_DELTA) {
-    return MIN_PIN_SCALE;
-  }
-  const t =
-    (latitudeDelta - PIN_FULL_SCALE_DELTA) / (PIN_MIN_SCALE_DELTA - PIN_FULL_SCALE_DELTA);
-  return 1 - t * (1 - MIN_PIN_SCALE);
+  return zoomed;
 }
 
 function regionFromCoords(latitude: number, longitude: number): Region {
@@ -70,10 +66,19 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
   const [locationError, setLocationError] = useState<string | null>(null);
   const [stations, setStations] = useState<ChargingStation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [userLocation, setUserLocation] = useState<LatLng | null>(null);
   const [isLoadingStations, setIsLoadingStations] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
   const skipNextRegionChange = useRef(true);
+  /** Marker presses often also fire MapView onPress — ignore that follow-up. */
+  const ignoreNextMapPress = useRef(false);
+  /**
+   * While true, ignore region updates so clustering / marker list stays frozen
+   * during the select pan+zoom (prevents remounts that blank custom markers).
+   */
+  const cameraAnimatingRef = useRef(false);
+  const cameraAnimTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stationsRef = useRef<ChargingStation[]>([]);
   const lastFetchRef = useRef<{ latitude: number; longitude: number; radiusMeters: number } | null>(
     null,
@@ -81,21 +86,12 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
 
   const { items: clusterItems, getExpansionRegion } = useChargerClusters(stations, mapRegion);
 
-  const latitudeDelta = mapRegion?.latitudeDelta ?? DEFAULT_DELTAS.latitudeDelta;
-  const showCard = latitudeDelta <= CARD_VISIBLE_MAX_DELTA;
-  const pinScale = pinScaleForDelta(latitudeDelta);
-
-  // Selection only applies to leaves currently on the map. If the charger is
-  // inside a cluster, treat it as unselected for rendering (no effect/setState).
-  const activeSelectedId = useMemo(() => {
+  const selectedStation = useMemo(() => {
     if (!selectedId) {
       return null;
     }
-    const isVisibleLeaf = clusterItems.some(
-      (item) => item.kind === 'station' && item.station.id === selectedId,
-    );
-    return isVisibleLeaf ? selectedId : null;
-  }, [clusterItems, selectedId]);
+    return stations.find((station) => station.id === selectedId) ?? null;
+  }, [selectedId, stations]);
 
   const loadChargers = useCallback(async (region: Region, force = false) => {
     const radiusMeters = radiusFromRegion(region.latitudeDelta, region.longitudeDelta);
@@ -161,6 +157,10 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
 
         const region = regionFromCoords(position.coords.latitude, position.coords.longitude);
         skipNextRegionChange.current = true;
+        setUserLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
         setInitialRegion(region);
         setMapRegion(region);
         void loadChargers(region, true);
@@ -179,18 +179,22 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
       }
+      if (cameraAnimTimeoutRef.current) {
+        clearTimeout(cameraAnimTimeoutRef.current);
+      }
     };
   }, [loadChargers]);
 
   const handleRegionChangeComplete = useCallback(
     (region: Region) => {
-      setMapRegion(region);
-
-      // Ignore MapView's first region callback after mounting on the user location.
-      if (skipNextRegionChange.current) {
+      // Freeze clustering inputs while the select camera is moving — otherwise
+      // markers remount mid-zoom and custom views often blank out.
+      if (cameraAnimatingRef.current || skipNextRegionChange.current) {
         skipNextRegionChange.current = false;
         return;
       }
+
+      setMapRegion(region);
 
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
@@ -204,25 +208,67 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
 
   const handleStationPress = useCallback(
     (station: ChargingStation) => {
+      ignoreNextMapPress.current = true;
       setSelectedId(station.id);
       onStationPress?.(station);
+
+      const nextRegion: Region = {
+        latitude: station.latitude,
+        longitude: station.longitude,
+        latitudeDelta: selectZoomDelta(
+          mapRegion?.latitudeDelta ?? DEFAULT_DELTAS.latitudeDelta,
+        ),
+        longitudeDelta: selectZoomDelta(
+          mapRegion?.longitudeDelta ?? DEFAULT_DELTAS.longitudeDelta,
+        ),
+      };
+
+      cameraAnimatingRef.current = true;
+      skipNextRegionChange.current = true;
+      if (cameraAnimTimeoutRef.current) {
+        clearTimeout(cameraAnimTimeoutRef.current);
+      }
+
+      mapRef.current?.animateToRegion(nextRegion, CENTER_ANIMATION_MS);
+
+      // Commit the target region after the camera settles (no completion API).
+      cameraAnimTimeoutRef.current = setTimeout(() => {
+        cameraAnimatingRef.current = false;
+        setMapRegion(nextRegion);
+      }, CENTER_ANIMATION_MS + 80);
     },
-    [onStationPress],
+    [mapRegion, onStationPress],
   );
 
   const handleClusterPress = useCallback(
     (clusterId: number, latitude: number, longitude: number) => {
+      ignoreNextMapPress.current = true;
       setSelectedId(null);
       const nextRegion = getExpansionRegion(clusterId, latitude, longitude);
       if (!nextRegion) {
         return;
       }
+
+      cameraAnimatingRef.current = true;
+      skipNextRegionChange.current = true;
+      if (cameraAnimTimeoutRef.current) {
+        clearTimeout(cameraAnimTimeoutRef.current);
+      }
+
       mapRef.current?.animateToRegion(nextRegion, 280);
+      cameraAnimTimeoutRef.current = setTimeout(() => {
+        cameraAnimatingRef.current = false;
+        setMapRegion(nextRegion);
+      }, 280 + 80);
     },
     [getExpansionRegion],
   );
 
   const handleMapPress = useCallback(() => {
+    if (ignoreNextMapPress.current) {
+      ignoreNextMapPress.current = false;
+      return;
+    }
     setSelectedId(null);
   }, []);
 
@@ -270,7 +316,8 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
         provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={initialRegion}
-        customMapStyle={MapStyle}
+        // Temporarily disabled to diagnose blank tiles (ultra-light style can look empty).
+        // customMapStyle={MapStyle}
         onRegionChangeComplete={handleRegionChangeComplete}
         onPress={handleMapPress}
         showsUserLocation
@@ -291,17 +338,29 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
             );
           }
 
+          // Selected pin is drawn once below so it never remounts when the
+          // cluster list reshuffles during pan/zoom.
+          if (item.station.id === selectedId) {
+            return null;
+          }
+
           return (
             <ChargerMarker
               key={item.station.id}
               station={item.station}
-              selected={item.station.id === activeSelectedId}
-              showCard={showCard}
-              pinScale={pinScale}
               onPress={handleStationPress}
             />
           );
         })}
+
+        {selectedStation ? (
+          <ChargerMarker
+            key={`selected-${selectedStation.id}`}
+            station={selectedStation}
+            selected
+            onPress={handleStationPress}
+          />
+        ) : null}
       </MapView>
 
       <View style={[styles.backButtonWrapper, { top: insets.top + Spacing.two }]}>
@@ -309,6 +368,12 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
       </View>
 
       <LoadingPill visible={isLoadingStations} top={insets.top + Spacing.two} />
+
+      <StationBottomSheet
+        station={selectedStation}
+        userLocation={userLocation}
+        onClose={() => setSelectedId(null)}
+      />
     </View>
   );
 }

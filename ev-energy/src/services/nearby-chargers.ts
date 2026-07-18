@@ -5,6 +5,8 @@ type PlacesNearbyResponse = {
   places?: Array<{
     id?: string;
     displayName?: { text?: string };
+    formattedAddress?: string;
+    shortFormattedAddress?: string;
     location?: { latitude?: number; longitude?: number };
   }>;
   error?: { message?: string; status?: string };
@@ -31,7 +33,8 @@ export async function fetchNearbyChargers({
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GoogleMapsApiKey,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.location',
+      'X-Goog-FieldMask':
+        'places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location',
     },
     body: JSON.stringify({
       includedTypes: ['electric_vehicle_charging_station'],
@@ -61,6 +64,10 @@ export async function fetchNearbyChargers({
     .map((place) => ({
       id: place.id!,
       name: place.displayName?.text?.trim() || 'Charging station',
+      address:
+        place.formattedAddress?.trim() ||
+        place.shortFormattedAddress?.trim() ||
+        undefined,
       latitude: place.location!.latitude!,
       longitude: place.location!.longitude!,
     }));
