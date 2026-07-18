@@ -1,14 +1,16 @@
 import * as Location from 'expo-location';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Platform, StyleSheet, View } from 'react-native';
 import MapView, { PROVIDER_GOOGLE, type Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BackButton } from '@/components/map/back-button';
 import { ChargerMarker } from '@/components/map/charger-marker';
+import { ClusterMarker } from '@/components/map/cluster-marker';
 import { ThemedText } from '@/components/themed-text';
 import { MapStyle } from '@/constants/map-style';
 import { Spacing } from '@/constants/theme';
+import { useChargerClusters } from '@/hooks/use-charger-clusters';
 import { distanceMeters, fetchNearbyChargers, radiusFromRegion } from '@/services/nearby-chargers';
 import type { ChargingStation } from '@/types/charging-station';
 
@@ -62,11 +64,12 @@ function sameStationIds(a: ChargingStation[], b: ChargingStation[]): boolean {
 
 export function EvMap({ onBack, onStationPress }: EvMapProps) {
   const insets = useSafeAreaInsets();
+  const mapRef = useRef<MapView>(null);
   const [initialRegion, setInitialRegion] = useState<Region | null>(null);
+  const [mapRegion, setMapRegion] = useState<Region | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [stations, setStations] = useState<ChargingStation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [latitudeDelta, setLatitudeDelta] = useState(DEFAULT_DELTAS.latitudeDelta);
   const [isLoadingStations, setIsLoadingStations] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef(0);
@@ -75,6 +78,24 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
   const lastFetchRef = useRef<{ latitude: number; longitude: number; radiusMeters: number } | null>(
     null,
   );
+
+  const { items: clusterItems, getExpansionRegion } = useChargerClusters(stations, mapRegion);
+
+  const latitudeDelta = mapRegion?.latitudeDelta ?? DEFAULT_DELTAS.latitudeDelta;
+  const showCard = latitudeDelta <= CARD_VISIBLE_MAX_DELTA;
+  const pinScale = pinScaleForDelta(latitudeDelta);
+
+  // Selection only applies to leaves currently on the map. If the charger is
+  // inside a cluster, treat it as unselected for rendering (no effect/setState).
+  const activeSelectedId = useMemo(() => {
+    if (!selectedId) {
+      return null;
+    }
+    const isVisibleLeaf = clusterItems.some(
+      (item) => item.kind === 'station' && item.station.id === selectedId,
+    );
+    return isVisibleLeaf ? selectedId : null;
+  }, [clusterItems, selectedId]);
 
   const loadChargers = useCallback(async (region: Region, force = false) => {
     const radiusMeters = radiusFromRegion(region.latitudeDelta, region.longitudeDelta);
@@ -141,6 +162,7 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
         const region = regionFromCoords(position.coords.latitude, position.coords.longitude);
         skipNextRegionChange.current = true;
         setInitialRegion(region);
+        setMapRegion(region);
         void loadChargers(region, true);
       } catch (error) {
         console.warn('[EvMap] Failed to get current location', error);
@@ -162,7 +184,7 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
 
   const handleRegionChangeComplete = useCallback(
     (region: Region) => {
-      setLatitudeDelta(region.latitudeDelta);
+      setMapRegion(region);
 
       // Ignore MapView's first region callback after mounting on the user location.
       if (skipNextRegionChange.current) {
@@ -180,9 +202,6 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
     [loadChargers],
   );
 
-  const showCard = latitudeDelta <= CARD_VISIBLE_MAX_DELTA;
-  const pinScale = pinScaleForDelta(latitudeDelta);
-
   const handleStationPress = useCallback(
     (station: ChargingStation) => {
       setSelectedId(station.id);
@@ -190,6 +209,22 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
     },
     [onStationPress],
   );
+
+  const handleClusterPress = useCallback(
+    (clusterId: number, latitude: number, longitude: number) => {
+      setSelectedId(null);
+      const nextRegion = getExpansionRegion(clusterId, latitude, longitude);
+      if (!nextRegion) {
+        return;
+      }
+      mapRef.current?.animateToRegion(nextRegion, 280);
+    },
+    [getExpansionRegion],
+  );
+
+  const handleMapPress = useCallback(() => {
+    setSelectedId(null);
+  }, []);
 
   if (Platform.OS === 'web') {
     return (
@@ -231,25 +266,42 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
   return (
     <View style={styles.container}>
       <MapView
+        ref={mapRef}
         provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={initialRegion}
         customMapStyle={MapStyle}
         onRegionChangeComplete={handleRegionChangeComplete}
+        onPress={handleMapPress}
         showsUserLocation
         showsMyLocationButton={false}
         showsCompass={false}
         toolbarEnabled={false}>
-        {stations.map((station) => (
-          <ChargerMarker
-            key={station.id}
-            station={station}
-            selected={station.id === selectedId}
-            showCard={showCard}
-            pinScale={pinScale}
-            onPress={handleStationPress}
-          />
-        ))}
+        {clusterItems.map((item) => {
+          if (item.kind === 'cluster') {
+            return (
+              <ClusterMarker
+                key={`cluster-${item.clusterId}`}
+                clusterId={item.clusterId}
+                count={item.count}
+                latitude={item.latitude}
+                longitude={item.longitude}
+                onPress={handleClusterPress}
+              />
+            );
+          }
+
+          return (
+            <ChargerMarker
+              key={item.station.id}
+              station={item.station}
+              selected={item.station.id === activeSelectedId}
+              showCard={showCard}
+              pinScale={pinScale}
+              onPress={handleStationPress}
+            />
+          );
+        })}
       </MapView>
 
       <View style={[styles.backButtonWrapper, { top: insets.top + Spacing.two }]}>

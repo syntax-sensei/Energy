@@ -1,10 +1,11 @@
-import { memo, useEffect, useRef, useState } from 'react';
-import { Marker } from 'react-native-maps';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { memo, useEffect, useRef, useState } from "react";
+import { Animated, Easing, StyleSheet, View } from "react-native";
+import { Marker } from "react-native-maps";
 
-import { BoltIcon } from '@/components/map/bolt-icon';
-import { Spacing } from '@/constants/theme';
-import type { ChargingStation } from '@/types/charging-station';
+import { BoltIcon } from "@/components/map/bolt-icon";
+import { ChargerNameCard } from "@/components/map/charger-name-card";
+import { Spacing } from "@/constants/theme";
+import type { ChargingStation } from "@/types/charging-station";
 
 type ChargerMarkerProps = {
   station: ChargingStation;
@@ -17,17 +18,22 @@ type ChargerMarkerProps = {
 };
 
 const ANIM_DURATION_MS = 220;
-/**
- * react-native-maps snapshots marker content to a native bitmap unless
- * tracksViewChanges is on. We only flip it on for the duration of a transition
- * (never leave it permanently on) — leaving it on for many markers, or swapping
- * the marker's child view tree structurally, is what causes Fabric's
- * "Attempt to recycle a mounted view" crash.
- */
 const TRACK_CHANGES_SETTLE_MS = 120;
 
-const PIN_SIZE = 40;
-const BADGE_SIZE = 32;
+const BADGE_SIZE = 36;
+const BADGE_RADIUS = 12;
+const RIPPLE_MAX_SCALE = 2.15;
+/**
+ * Padding around the badge for shadows + ripples. Keep this tight — the Marker
+ * hit target is the full wrapper rectangle (including transparent pixels).
+ */
+const MARKER_PAD = 22;
+const MARKER_BOX = BADGE_SIZE + MARKER_PAD * 2;
+/** Space below the label so it sits above the badge without overlapping. */
+const LABEL_LIFT = BADGE_SIZE / 2 + Spacing.two;
+
+const COLOR_UNSELECTED = "#1c1c1e";
+const COLOR_SELECTED = "#c6f135";
 
 export const ChargerMarker = memo(function ChargerMarker({
   station,
@@ -36,40 +42,40 @@ export const ChargerMarker = memo(function ChargerMarker({
   pinScale = 1,
   onPress,
 }: ChargerMarkerProps) {
-  const cardAnim = useRef(new Animated.Value(showCard ? 1 : 0)).current;
   const scaleAnim = useRef(new Animated.Value(pinScale)).current;
   const selectedAnim = useRef(new Animated.Value(selected ? 1 : 0)).current;
-  const [tracksViewChanges, setTracksViewChanges] = useState(true);
+  const ripple1 = useRef(new Animated.Value(0)).current;
+  const ripple2 = useRef(new Animated.Value(0)).current;
+  const [tracksIcon, setTracksIcon] = useState(true);
+  const [tracksLabel, setTracksLabel] = useState(true);
   const settleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const labelSettleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   useEffect(() => {
-    setTracksViewChanges(true);
+    setTracksIcon(true);
     if (settleTimeoutRef.current) {
       clearTimeout(settleTimeoutRef.current);
     }
 
     Animated.parallel([
-      Animated.timing(cardAnim, {
-        toValue: showCard ? 1 : 0,
-        duration: ANIM_DURATION_MS,
-        useNativeDriver: true,
-      }),
       Animated.timing(scaleAnim, {
         toValue: pinScale,
         duration: ANIM_DURATION_MS,
         useNativeDriver: true,
       }),
-      // Drives backgroundColor/borderColor/borderRadius below, which the native
-      // driver can't animate — must stay on the JS driver.
       Animated.timing(selectedAnim, {
         toValue: selected ? 1 : 0,
         duration: ANIM_DURATION_MS,
         useNativeDriver: false,
       }),
     ]).start(() => {
-      settleTimeoutRef.current = setTimeout(() => {
-        setTracksViewChanges(false);
-      }, TRACK_CHANGES_SETTLE_MS);
+      if (!selected) {
+        settleTimeoutRef.current = setTimeout(() => {
+          setTracksIcon(false);
+        }, TRACK_CHANGES_SETTLE_MS);
+      }
     });
 
     return () => {
@@ -77,123 +83,210 @@ export const ChargerMarker = memo(function ChargerMarker({
         clearTimeout(settleTimeoutRef.current);
       }
     };
-  }, [showCard, pinScale, selected, cardAnim, scaleAnim, selectedAnim]);
+  }, [pinScale, selected, scaleAnim, selectedAnim]);
 
-  const pinBackgroundColor = selectedAnim.interpolate({
+  useEffect(() => {
+    if (!showCard) {
+      return;
+    }
+    setTracksLabel(true);
+    if (labelSettleTimeoutRef.current) {
+      clearTimeout(labelSettleTimeoutRef.current);
+    }
+    labelSettleTimeoutRef.current = setTimeout(() => {
+      setTracksLabel(false);
+    }, 280);
+    return () => {
+      if (labelSettleTimeoutRef.current) {
+        clearTimeout(labelSettleTimeoutRef.current);
+      }
+    };
+  }, [showCard, station.id, station.name]);
+
+  useEffect(() => {
+    ripple1.setValue(0);
+    ripple2.setValue(0);
+
+    if (!selected) {
+      return;
+    }
+
+    setTracksIcon(true);
+
+    const makeRipple = (value: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(value, {
+            toValue: 1,
+            duration: 1400,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(value, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+
+    const loop = Animated.parallel([
+      makeRipple(ripple1, 0),
+      makeRipple(ripple2, 700),
+    ]);
+    loop.start();
+
+    return () => {
+      loop.stop();
+    };
+  }, [selected, ripple1, ripple2]);
+
+  const badgeBackgroundColor = selectedAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['#ffffff', '#1c1c1e'],
+    outputRange: [COLOR_UNSELECTED, COLOR_SELECTED],
   });
-  const pinBorderColor = selectedAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['#d1d1d6', '#1c1c1e'],
-  });
-  const pinBorderRadius = selectedAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [BADGE_SIZE / 2, 2],
-  });
-  const pinRotate = selectedAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '45deg'],
-  });
-  const iconCounterRotate = selectedAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '-45deg'],
-  });
+
+  const coordinate = {
+    latitude: station.latitude,
+    longitude: station.longitude,
+  };
 
   return (
-    <Marker
-      coordinate={{ latitude: station.latitude, longitude: station.longitude }}
-      anchor={{ x: 0.5, y: 1 }}
-      onPress={() => onPress?.(station)}
-      tracksViewChanges={tracksViewChanges}>
-      <View style={styles.wrapper}>
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.labelBubble,
-            {
-              opacity: cardAnim,
-              transform: [
-                { scale: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1] }) },
-                { translateY: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [-4, 0] }) },
-              ],
-            },
-          ]}>
-          <Text style={styles.labelTitle} numberOfLines={1}>
-            {station.name}
-          </Text>
-        </Animated.View>
+    <>
+      {/*
+        Label is a separate non-tappable marker so its wide bubble never steals
+        presses meant for the map or neighboring chargers.
+      */}
+      {showCard ? (
+        <Marker
+          identifier={`${station.id}-label`}
+          coordinate={coordinate}
+          anchor={{ x: 0.5, y: 1 }}
+          tappable={false}
+          tracksViewChanges={tracksLabel}
+          zIndex={selected ? 2 : 0}
+        >
+          <View style={styles.labelLift} pointerEvents="none" collapsable={false}>
+            <ChargerNameCard station={station} />
+          </View>
+        </Marker>
+      ) : null}
 
-        <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+      <Marker
+        identifier={station.id}
+        coordinate={coordinate}
+        anchor={{ x: 0.5, y: 0.5 }}
+        onPress={(event) => {
+          // Prevent the map's onPress from also firing (would clear selection).
+          event.stopPropagation?.();
+          onPress?.(station);
+        }}
+        tracksViewChanges={tracksIcon || selected}
+        zIndex={selected ? 3 : 1}
+      >
+        <Animated.View
+          style={[styles.markerBox, { transform: [{ scale: scaleAnim }] }]}
+          collapsable={false}
+        >
+          <RippleRing progress={ripple1} />
+          <RippleRing progress={ripple2} />
+
           <Animated.View
-            style={[
-              styles.pinShape,
-              {
-                backgroundColor: pinBackgroundColor,
-                borderColor: pinBorderColor,
-                borderBottomRightRadius: pinBorderRadius,
-                transform: [{ rotate: pinRotate }],
-              },
-            ]}>
-            <Animated.View style={{ transform: [{ rotate: iconCounterRotate }] }}>
-              <View style={styles.iconLayer}>
-                <BoltIcon size={14} color="#1c1c1e" />
-              </View>
-              <Animated.View
-                style={[styles.iconLayer, styles.iconLayerOverlay, { opacity: selectedAnim }]}>
-                <BoltIcon size={16} color="#ffffff" />
-              </Animated.View>
+            style={[styles.badge, { backgroundColor: badgeBackgroundColor }]}
+          >
+            <Animated.View
+              style={[
+                styles.iconLayer,
+                {
+                  opacity: selectedAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [1, 0],
+                  }),
+                },
+              ]}
+            >
+              <BoltIcon size={16} color="#ffffff" />
+            </Animated.View>
+            <Animated.View
+              style={[
+                styles.iconLayer,
+                styles.iconLayerOverlay,
+                { opacity: selectedAnim },
+              ]}
+            >
+              <BoltIcon size={16} color={COLOR_UNSELECTED} />
             </Animated.View>
           </Animated.View>
         </Animated.View>
-      </View>
-    </Marker>
+      </Marker>
+    </>
   );
 });
 
+function RippleRing({ progress }: { progress: Animated.Value }) {
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.ripple,
+        {
+          opacity: progress.interpolate({
+            inputRange: [0, 0.001, 0.25, 1],
+            outputRange: [0, 0.45, 0.28, 0],
+          }),
+          transform: [
+            {
+              scale: progress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [1, RIPPLE_MAX_SCALE],
+              }),
+            },
+          ],
+        },
+      ]}
+    />
+  );
+}
+
 const styles = StyleSheet.create({
-  wrapper: {
-    alignItems: 'center',
-    gap: Spacing.one,
+  labelLift: {
+    alignItems: "center",
+    // Pushes the bubble above the badge; not part of the icon hit target.
+    paddingBottom: LABEL_LIFT,
   },
-  labelBubble: {
-    backgroundColor: '#ffffff',
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.one,
-    maxWidth: 160,
-    alignItems: 'flex-start',
-    shadowColor: '#000000',
+  markerBox: {
+    width: MARKER_BOX,
+    height: MARKER_BOX,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badge: {
+    width: BADGE_SIZE,
+    height: BADGE_SIZE,
+    borderRadius: BADGE_RADIUS,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.28,
     shadowRadius: 4,
-    elevation: 3,
+    elevation: 5,
+    zIndex: 1,
   },
-  labelTitle: {
-    color: '#1c1c1e',
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  pinShape: {
-    width: PIN_SIZE,
-    height: PIN_SIZE,
-    borderRadius: PIN_SIZE / 2,
-    borderWidth: 1.5,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 4,
+  ripple: {
+    position: "absolute",
+    width: BADGE_SIZE,
+    height: BADGE_SIZE,
+    borderRadius: BADGE_RADIUS + 4,
+    backgroundColor: COLOR_SELECTED,
   },
   iconLayer: {
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   iconLayerOverlay: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
