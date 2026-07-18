@@ -1,8 +1,8 @@
-import { Marker } from 'react-native-maps';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from "react-native";
+import { Marker } from "react-native-maps";
 
-import { BoltIcon } from '@/components/map/bolt-icon';
-import type { ChargingStation } from '@/types/charging-station';
+import { BoltIcon } from "@/components/map/bolt-icon";
+import type { ChargingStation } from "@/types/charging-station";
 
 type DestinationPinProps = {
   station: ChargingStation;
@@ -16,7 +16,8 @@ export function DestinationPin({ station, onPress }: DestinationPinProps) {
       coordinate={{ latitude: station.latitude, longitude: station.longitude }}
       anchor={{ x: 0.5, y: 1 }}
       onPress={() => onPress?.(station)}
-      tracksViewChanges={false}>
+      tracksViewChanges={false}
+    >
       <View style={styles.pinBody}>
         <View style={styles.iconCircle}>
           <BoltIcon size={16} color="#ffffff" />
@@ -34,17 +35,17 @@ const styles = StyleSheet.create({
     height: PIN_SIZE,
     borderRadius: PIN_SIZE / 2,
     borderBottomRightRadius: 2,
-    backgroundColor: '#1c1c1e',
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ rotate: '45deg' }],
-    shadowColor: '#000000',
+    backgroundColor: "#1c1c1e",
+    alignItems: "center",
+    justifyContent: "center",
+    transform: [{ rotate: "45deg" }],
+    shadowColor: "#000000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 4,
   },
   iconCircle: {
-    transform: [{ rotate: '-45deg' }],
+    transform: [{ rotate: "-45deg" }],
   },
 });
