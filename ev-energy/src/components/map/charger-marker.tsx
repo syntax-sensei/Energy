@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 
 import { BoltIcon } from '@/components/map/bolt-icon';
@@ -11,16 +11,12 @@ type ChargerMarkerProps = {
   onPress?: (station: ChargingStation) => void;
 };
 
-const TRACK_SETTLE_MS = 180;
+const TRACK_SETTLE_MS = Platform.OS === 'android' ? 350 : 180;
 
-const BADGE_SIZE = 36;
-const BADGE_RADIUS = 12;
-/**
- * Padding around the badge for shadows. Keep this tight — the Marker hit
- * target is the full wrapper rectangle (including transparent pixels).
- */
-const MARKER_PAD = 10;
-const MARKER_BOX = BADGE_SIZE + MARKER_PAD * 2;
+/** Visual + layout size — keep identical so Android bitmap bounds match the icon. */
+const BADGE_SIZE = 28;
+const BADGE_RADIUS = 9;
+const ICON_SIZE = 13;
 
 const COLOR_UNSELECTED = '#1c1c1e';
 const COLOR_SELECTED = '#c6f135';
@@ -62,32 +58,30 @@ export const ChargerMarker = memo(function ChargerMarker({
         longitude: station.longitude,
       }}
       anchor={{ x: 0.5, y: 0.5 }}
+      style={styles.marker}
       onPress={(event) => {
         event.stopPropagation?.();
         onPress?.(station);
       }}
       tracksViewChanges={tracksViewChanges}
       zIndex={selected ? 10 : 1}>
-      <View style={styles.markerBox} collapsable={false}>
-        <View
-          style={[
-            styles.badge,
-            { backgroundColor: selected ? COLOR_SELECTED : COLOR_UNSELECTED },
-          ]}
-          collapsable={false}>
-          <BoltIcon size={16} color={selected ? COLOR_UNSELECTED : '#ffffff'} />
-        </View>
+      <View
+        style={[
+          styles.badge,
+          { backgroundColor: selected ? COLOR_SELECTED : COLOR_UNSELECTED },
+        ]}
+        collapsable={false}>
+        <BoltIcon size={ICON_SIZE} color={selected ? COLOR_UNSELECTED : '#ffffff'} />
       </View>
     </Marker>
   );
 });
 
 const styles = StyleSheet.create({
-  markerBox: {
-    width: MARKER_BOX,
-    height: MARKER_BOX,
-    alignItems: 'center',
-    justifyContent: 'center',
+  // Explicit Marker size so Android's shadow/yoga box matches the badge bitmap.
+  marker: {
+    width: BADGE_SIZE,
+    height: BADGE_SIZE,
   },
   badge: {
     width: BADGE_SIZE,
@@ -95,10 +89,20 @@ const styles = StyleSheet.create({
     borderRadius: BADGE_RADIUS,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.28,
-    shadowRadius: 4,
-    elevation: 5,
+    overflow: 'hidden',
+    // iOS-only soft shadow — Android elevation draws outside the view bounds
+    // and gets clipped when the marker bitmap is sized to BADGE_SIZE.
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.25,
+        shadowRadius: 2,
+      },
+      android: {
+        elevation: 0,
+      },
+      default: {},
+    }),
   },
 });

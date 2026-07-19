@@ -338,29 +338,17 @@ export function EvMap({ onBack, onStationPress }: EvMapProps) {
             );
           }
 
-          // Selected pin is drawn once below so it never remounts when the
-          // cluster list reshuffles during pan/zoom.
-          if (item.station.id === selectedId) {
-            return null;
-          }
-
+          // Keep a stable key across select/deselect so Fabric does not remount
+          // the native marker (avoids AIRGoogleMap insertReactSubview crashes).
           return (
             <ChargerMarker
               key={item.station.id}
               station={item.station}
+              selected={item.station.id === selectedId}
               onPress={handleStationPress}
             />
           );
         })}
-
-        {selectedStation ? (
-          <ChargerMarker
-            key={`selected-${selectedStation.id}`}
-            station={selectedStation}
-            selected
-            onPress={handleStationPress}
-          />
-        ) : null}
       </MapView>
 
       <View style={[styles.backButtonWrapper, { top: insets.top + Spacing.two }]}>
