@@ -26,6 +26,29 @@ export const Colors = {
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
+/**
+ * EV Energy brand accents — shared by map markers and onboarding.
+ * Prefer these over one-off hex values in UI code.
+ */
+export const Brand = {
+  /** Selected pin / primary CTA fill */
+  accent: '#C6F135',
+  /** Text on lime CTAs */
+  onAccent: '#1C1C1E',
+  /** Darker green for links / small text on white */
+  accentDark: '#3F6F00',
+  text: '#000000',
+  textSecondary: '#60646C',
+  background: '#FFFFFF',
+  border: '#E8E8EC',
+} as const;
+
+export const Radii = {
+  button: 14,
+  card: 16,
+  pill: 999,
+} as const;
+
 export const Fonts = Platform.select({
   ios: {
     /** iOS `UIFontDescriptorSystemDesignDefault` */
