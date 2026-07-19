@@ -1,0 +1,87 @@
+diff --git a/node_modules/react-native-maps/android/src/main/java/com/rnmaps/maps/MapMarker.java b/node_modules/react-native-maps/android/src/main/java/com/rnmaps/maps/MapMarker.java
+index b755f9b..10158ab 100644
+--- a/node_modules/react-native-maps/android/src/main/java/com/rnmaps/maps/MapMarker.java
++++ b/node_modules/react-native-maps/android/src/main/java/com/rnmaps/maps/MapMarker.java
+@@ -425,6 +425,28 @@ public class MapMarker extends MapFeature {
+     }
+   }
+ 
++  @Override
++  protected void onLayout(boolean changed, int l, int t, int r, int b) {
++    super.onLayout(changed, l, t, r, b);
++
++    // On Fabric, the Yoga layout box reported to updateExtraData() can be smaller
++    // than the marker's actual laid-out subtree, which produces an undersized
++    // bitmap and a clipped/cropped custom marker icon on Android only (iOS hosts
++    // the view live and isn't affected). Recompute from the real laid-out bounds
++    // here and refresh the bitmap whenever they change.
++    int newWidth = r - l;
++    int newHeight = b - t;
++    if (newWidth > 0 && newHeight > 0 && (newWidth != this.width || newHeight != this.height)) {
++      this.width = newWidth;
++      this.height = newHeight;
++
++      clearDrawableCache();
++      if (marker != null) {
++        update(true);
++      }
++    }
++  }
++
+   @Override
+   public Object getFeature() {
+     return marker;
+diff --git a/node_modules/react-native-maps/ios/AirGoogleMaps/AIRGoogleMap.m b/node_modules/react-native-maps/ios/AirGoogleMaps/AIRGoogleMap.m
+index a1ffe69..acb1b94 100644
+--- a/node_modules/react-native-maps/ios/AirGoogleMaps/AIRGoogleMap.m
++++ b/node_modules/react-native-maps/ios/AirGoogleMaps/AIRGoogleMap.m
+@@ -148,6 +148,12 @@ - (id)eventFromCoordinate:(CLLocationCoordinate2D)coordinate {
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+ - (void)insertReactSubview:(id<RCTComponent>)subview atIndex:(NSInteger)atIndex {
++  // Fabric can pass a nil subview or an out-of-range index during rapid marker
++  // mount/unmount. Guard both cases to avoid NSRangeException / nil insert crashes.
++  if (subview == nil) {
++    return;
++  }
++
+   // Our desired API is to pass up markers/overlays as children to the mapview component.
+   // This is where we intercept them and do the appropriate underlying mapview action.
+   if ([subview isKindOfClass:[AIRGoogleMapMarker class]]) {
+@@ -188,7 +194,8 @@ - (void)insertReactSubview:(id<RCTComponent>)subview atIndex:(NSInteger)atIndex
+       [self insertReactSubview:(UIView *)childSubviews[i] atIndex:atIndex];
+     }
+   }
+-  [_reactSubviews insertObject:(UIView *)subview atIndex:(NSUInteger) atIndex];
++  NSUInteger safeIndex = MIN((NSUInteger)atIndex, _reactSubviews.count);
++  [_reactSubviews insertObject:(UIView *)subview atIndex:safeIndex];
+ }
+ #pragma clang diagnostic pop
+ 
+diff --git a/node_modules/react-native-maps/ios/AirMaps/AIRMap.m b/node_modules/react-native-maps/ios/AirMaps/AIRMap.m
+index 07a4638..ed55a26 100644
+--- a/node_modules/react-native-maps/ios/AirMaps/AIRMap.m
++++ b/node_modules/react-native-maps/ios/AirMaps/AIRMap.m
+@@ -104,6 +104,12 @@ -(void)addSubview:(UIView *)view {
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+ - (void)insertReactSubview:(id<RCTComponent>)subview atIndex:(NSInteger)atIndex {
++    // Fabric can pass a nil subview or an out-of-range index during rapid marker
++    // mount/unmount. Guard both cases to avoid NSRangeException / nil insert crashes.
++    if (subview == nil) {
++        return;
++    }
++
+     // Our desired API is to pass up markers/overlays as children to the mapview component.
+     // This is where we intercept them and do the appropriate underlying mapview action.
+     if ([subview isKindOfClass:[AIRMapMarker class]]) {
+@@ -135,7 +141,8 @@ - (void)insertReactSubview:(id<RCTComponent>)subview atIndex:(NSInteger)atIndex
+             [self insertReactSubview:(UIView *)childSubviews[i] atIndex:atIndex];
+         }
+     }
+-    [_reactSubviews insertObject:(UIView *)subview atIndex:(NSUInteger) atIndex];
++    NSUInteger safeIndex = MIN((NSUInteger)atIndex, _reactSubviews.count);
++    [_reactSubviews insertObject:(UIView *)subview atIndex:safeIndex];
+ }
+ #pragma clang diagnostic pop
+ 

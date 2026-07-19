@@ -19,14 +19,14 @@ type StationFeature = Supercluster.PointFeature<StationProps>;
 export type ChargerClusterIndex = Supercluster<StationProps, Supercluster.AnyProps>;
 
 /**
- * Tuned for mobile charger maps:
- * - radius: how close (in tile pixels) points must be to merge
- * - maxZoom: above this zoom, every charger is shown individually
+ * Tuned for mobile charger maps (less aggressive = more individual pins):
+ * - radius: how close (in tile pixels) points must be to merge — lower = less clustering
+ * - maxZoom: above this zoom, every charger is shown individually — lower = splits sooner
  * - minPoints: need at least 2 chargers to form a cluster
  */
 const CLUSTER_OPTIONS: Supercluster.Options<StationProps, Supercluster.AnyProps> = {
-  radius: 56,
-  maxZoom: 16,
+  radius: 36,
+  maxZoom: 14,
   minZoom: 0,
   minPoints: 2,
 };
